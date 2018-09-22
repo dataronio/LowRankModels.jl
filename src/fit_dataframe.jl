@@ -1,8 +1,14 @@
 import Base: isnan
-import DataArrays: DataArray, isna, dropna, NA, NAtype, array
+import DataArrays: DataArray, isna, dropna, NA, NAtype
+if VERSION < v"0.6.0-pre"
+  import DataArrays: array
+else
+  import DataArrays: isnan
+end
 import DataFrames: DataFrame, ncol, convert
+import Missings: Missing, missing, ismissing
 
-export GLRM, observations, expand_categoricals!, NaNs_to_NAs!, NAs_to_0s!
+export GLRM, observations, expand_categoricals!, NaNs_to_NAs!, NAs_to_0s!, NaNs_to_Missing!, ismissing_vec
 
 include("fit_dataframe_w_type_imputation.jl")
 
@@ -17,7 +23,7 @@ function GLRM(df::DataFrame, k::Int, datatypes::Array{Symbol,1};
               loss_map = probabilistic_losses,
               rx = QuadReg(.01), ry = QuadReg(.01),
               offset = true, scale = false, prob_scale = true,
-              transform_data_to_numbers = true, NaNs_to_NAs = true)
+              transform_data_to_numbers = true, NaNs_to_Missing = true)
 
     # check input
     if ncol(df)!=length(datatypes)
@@ -33,8 +39,8 @@ function GLRM(df::DataFrame, k::Int, datatypes::Array{Symbol,1};
 
     # clean up dataframe if needed
     A = copy(df)
-    if NaNs_to_NAs
-        NaNs_to_NAs!(A)
+    if NaNs_to_Missing
+        NaNs_to_Missing!(A)
     end
 
     # define loss functions for each column
@@ -53,7 +59,7 @@ function GLRM(df::DataFrame, k::Int, datatypes::Array{Symbol,1};
     # form model
     rys = Array(Regularizer, length(losses))
     for i=1:length(losses)
-        if isa(losses[i], MultinomialOrdinalLoss) || isa(losses[i], OrdisticLoss)
+        if isa(losses[i].domain, OrdinalDomain) && embedding_dim(losses[i])>1 #losses[i], MultinomialOrdinalLoss) || isa(losses[i], OrdisticLoss)
             rys[i] = OrdinalReg(copy(ry))
         else
             rys[i] = copy(ry)
@@ -71,10 +77,17 @@ end
 
 ## transform data to numbers
 
+function is_number_or_null(x)
+  isa(x, Number) || (:value in fieldnames(x) && isa(x.value, Number))
+end
+function is_int_or_null(x)
+  isa(x, Int) || (:value in fieldnames(x) && isa(x.value, Int))
+end
+
 function map_to_numbers!(df, j::Int, datatype::Symbol)
     # easy case
     if datatype == :real
-        if all(xi -> isa(xi, Number), df[j][!isna(df[j])])
+        if all(xi -> is_number_or_null(xi), df[j][!ismissing_vec(df[j])])
             return df[j]
         else
             error("column contains non-numerical values")
@@ -83,7 +96,7 @@ function map_to_numbers!(df, j::Int, datatype::Symbol)
 
     # harder cases
     col = copy(df[j])
-    levels = Set(col[!isna(col)])
+    levels = Set(col[!ismissing_vec(col)])
     if datatype == :bool
         if length(levels)>2
             error("Boolean variable should have at most two levels; instead, got:\n$levels")
@@ -94,17 +107,26 @@ function map_to_numbers!(df, j::Int, datatype::Symbol)
     else
         error("datatype $datatype not recognized")
     end
+
+    # for after the Nullapocalypse
     df[j] = DataArray(Int, length(df[j]))
     for i in 1:length(col)
-        if !isna(col[i])
-            df[j][i] = colmap[col[i]]
+        if !ismissing(col[i])
+            df[j][i] = getval(colmap[col[i]])
         end
     end
     return df[j]
 end
 
+function getval{T}(x::Nullable{T})
+  x.value
+end
+function getval{T<:Number}(x::T)
+  x
+end
+
 function map_to_numbers!(df, j::Int, loss::Type{QuadLoss})
-    if all(xi -> isa(xi, Number), df[j][!isna(df[j])])
+    if all(xi -> is_number_or_null(xi), df[j][!ismissing_vec(df[j])])
         return df[j]
     else
         error("column contains non-numerical values")
@@ -113,14 +135,14 @@ end
 
 function map_to_numbers!(df, j::Int, loss::Type{LogisticLoss})
     col = copy(df[j])
-    levels = Set(col[!isna(col)])
+    levels = Set(col[!ismissing_vec(col)])
     if length(levels)>2
         error("Boolean variable should have at most two levels")
     end
     colmap = Dict{Any,Int}(zip(sort(collect(levels)), [-1,1][1:length(levels)]))
     df[j] = DataArray(Int, length(df[j]))
     for i in 1:length(col)
-        if !isna(col[i])
+        if !ismissing(col[i])
             df[j][i] = colmap[col[i]]
         end
     end
@@ -129,11 +151,11 @@ end
 
 function map_to_numbers!(df, j::Int, loss::Type{MultinomialLoss})
     col = copy(df[j])
-    levels = Set(col[!isna(col)])
+    levels = Set(col[!ismissing_vec(col)])
     colmap = Dict{Any,Int}(zip(sort(collect(levels)), 1:length(levels)))
     df[j] = DataArray(Int, length(df[j]))
     for i in 1:length(col)
-        if !isna(col[i])
+        if !ismissing(col[i])
             df[j][i] = colmap[col[i]]
         end
     end
@@ -142,11 +164,11 @@ end
 
 function map_to_numbers!(df, j::Int, loss::Type{MultinomialOrdinalLoss})
     col = copy(df[j])
-    levels = Set(col[!isna(col)])
+    levels = Set(col[!ismissing_vec(col)])
     colmap = Dict{Any,Int}(zip(sort(collect(levels)), 1:length(levels)))
     df[j] = DataArray(Int, length(df[j]))
     for i in 1:length(col)
-        if !isna(col[i])
+        if !ismissing(col[i])
             df[j][i] = colmap[col[i]]
         end
     end
@@ -161,7 +183,7 @@ function pick_loss(l, col)
 end
 
 function pick_loss(l::Type{LogisticLoss}, col)
-    if all(xi -> isna(xi) || xi in [-1,1], col)
+    if all(xi -> ismissing(xi) || xi in [-1,1], col)
         return l()
     else
         error("LogisticLoss can only be used on data taking values in {-1, 1}")
@@ -169,16 +191,16 @@ function pick_loss(l::Type{LogisticLoss}, col)
 end
 
 function pick_loss(l::Type{MultinomialLoss}, col)
-    if all(xi -> isna(xi) || (isa(xi, Int) && xi >= 1), col)
-        return l(maximum(col[!isna(col)]))
+    if all(xi -> ismissing(xi) || (is_int_or_null(xi) && xi >= 1), col)
+        return l(maximum(skipmissing(col)))
     else
         error("MultinomialLoss can only be used on data taking positive integer values")
     end
 end
 
 function pick_loss(l::Type{MultinomialOrdinalLoss}, col)
-    if all(xi -> isna(xi) || (isa(xi, Int) && xi >= 1), col)
-        return l(maximum(col[!isna(col)]))
+    if all(xi -> ismissing(xi) || (isa(xi, Int) && xi >= 1), col)
+        return l(maximum(skipmissing(col)))
     else
         error("MultinomialOrdinalLoss can only be used on data taking positive integer values")
     end
@@ -186,12 +208,13 @@ end
 
 observations(da::DataArray) = df_observations(da)
 observations(df::DataFrame) = df_observations(df)
+# isnan -> ismissing
 function df_observations(da)
     obs = @compat Tuple{Int, Int}[]
     m,n = size(da)
     for j=1:n # follow column-major order. First element of index in innermost loop
         for i=1:m
-            if !isna(da[i,j])
+            if !ismissing(da[i,j])
                 push!(obs,(i,j))
             end
         end
@@ -199,7 +222,7 @@ function df_observations(da)
     return obs
 end
 
-# NAs in the data frame will be replaced by the number `z`
+# TODO.. Missings in the data frame will be replaced by the number `z`
 function df2array(df::DataFrame, z::Number)
     A = zeros(size(df))
     for i=1:size(A,2)
@@ -223,7 +246,7 @@ function expand_categoricals!(df::DataFrame,categoricals::Array{Int,1})
     for col in categoricals
         levels = sort(unique(df[:,col]))
         for level in levels
-            if !isna(level)
+            if !ismissing(level)
                 colname = symbol(string(colnames[col])*"="*string(level))
                 df[colname] = (df[:,col] .== level)
             end
@@ -246,13 +269,16 @@ function expand_categoricals!(df::DataFrame,categoricals::Array)
 end
 
 # convert NaNs to NAs
-isnan(x::NAtype) = false
+# isnan(x::NAtype) = false
 isnan(x::AbstractString) = false
+isnan{T}(x::Nullable{T}) = isnan(x.value)
+
+# letting these two functions be here for now, just to catch bugs.
 function NaNs_to_NAs!(df::DataFrame)
     m,n = size(df)
     for j=1:n # follow column-major order. First element of index in innermost loop
         for i=1:m
-            if isnan(df[i,j])
+            if !isna(df[i,j]) && isnan(df[i,j])
                 df[i,j] = NA
             end
         end
@@ -270,4 +296,18 @@ function NAs_to_0s!(df::DataFrame)
         end
     end
     return df
+end
+
+# same functionality as above.
+function NaNs_to_Missing!(df::DataFrame)
+    m,n = size(df)
+    for j=1:n
+        df[j] = [isnan(df[j][i]) ? missing : value for (i,value) in enumerate(df[j])];
+	end
+    return df
+end
+
+# ismissing(Array{Union{T,Missing},1}) doesn't exist.
+function ismissing_vec(V::Array{Any,1})
+   return Bool[ismissing(x) for x in V[:]]
 end

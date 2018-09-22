@@ -30,7 +30,7 @@ export impute, error_metric, errors
 roundcutoff{T<:Number}(x,a::T,b::T) = T(min(max(round(x),a),b))
 
 # Error metrics for general use
-squared_error(a_imputed::Float64, a::Number) = (a_imputed-a)^2
+squared_error(a_imputed::Number, a::Number) = (a_imputed-a)^2
 misclassification{T}(a_imputed::T, a::T) = float(!(a_imputed==a)) # return 0.0 if equal, 1.0 else
 
 # use the default loss domain imputation if no domain provided
@@ -91,7 +91,7 @@ impute(D::OrdinalDomain, l::OrdisticLoss, u::AbstractArray) = indmin(u.^2)
 # positive entry of u
 function impute(D::OrdinalDomain, l::MultinomialOrdinalLoss, u::AbstractArray)
 	enforce_MNLOrdRules!(u)
-	eu = exp(u)
+	eu = exp.(u)
 	p = [1-eu[1], -diff(eu)..., eu[end]]
 	return indmax(p)
 end
@@ -151,7 +151,7 @@ function impute{DomainSubtype<:Domain,LossSubtype<:Loss}(
 	m, d = size(U)
 	n = length(losses)
 	yidxs = get_yidxs(losses)
-	A_imputed = Array(Number, (m, n));
+	A_imputed = Array{Number}((m, n));
 	for f in 1:n
 		for i in 1:m
 			if length(yidxs[f]) > 1

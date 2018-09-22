@@ -3,7 +3,7 @@
 # the abstract type Regularizer.
 # Regularizers should implement `evaluate` and `prox`.
 
-import Base.scale!, Base.*, Roots.fzero
+import Base.scale!, Base.*
 
 export Regularizer, ProductRegularizer, # abstract types
        # concrete regularizers
@@ -27,8 +27,8 @@ TOL = 1e-12
 # regularizers
 # regularizers r should have the method `prox` defined such that
 # prox(r)(u,alpha) = argmin_x( alpha r(x) + 1/2 \|x - u\|_2^2)
-abstract Regularizer
-abstract MatrixRegularizer <: LowRankModels.Regularizer
+@compat abstract type Regularizer end
+@compat abstract type MatrixRegularizer <: LowRankModels.Regularizer end
 
 # default inplace prox operator (slower than if inplace prox is implemented)
 prox!(r::Regularizer,u::AbstractArray,alpha::Number) = (v = prox(r,u,alpha); @simd for i=1:length(u) @inbounds u[i]=v[i] end; u)
@@ -55,7 +55,7 @@ end
 QuadReg() = QuadReg(1)
 prox(r::QuadReg,u::AbstractArray,alpha::Number) = 1/(1+2*alpha*r.scale)*u
 prox!(r::QuadReg,u::Array{Float64},alpha::Number) = scale!(u, 1/(1+2*alpha*r.scale))
-evaluate(r::QuadReg,a::AbstractArray) = r.scale*sumabs2(a)
+evaluate(r::QuadReg,a::AbstractArray) = r.scale*sum(abs2, a)
 
 ## constrained QuadLoss regularization
 ## the function r such that
@@ -80,12 +80,12 @@ type OneReg<:Regularizer
     scale::Float64
 end
 OneReg() = OneReg(1)
-prox(r::OneReg,u::AbstractArray,alpha::Number) = max(u-alpha,0) + min(u+alpha,0)
+prox(r::OneReg,u::AbstractArray,alpha::Number) = max.(u-alpha,0) + min.(u+alpha,0)
 prox!(r::OneReg,u::AbstractArray,alpha::Number) = begin
-  softthreshold = (x::Number -> max(x-alpha,0) + min(x+alpha,0))
-  map!(softthreshold, u)
+  softthreshold = (x::Number -> max.(x-alpha,0) + min.(x+alpha,0))
+  map!(softthreshold, u, u)
 end
-evaluate(r::OneReg,a::AbstractArray) = r.scale*sumabs(a)
+evaluate(r::OneReg,a::AbstractArray) = r.scale*sum(abs,a)
 
 
 ## no regularization
@@ -120,10 +120,10 @@ type NonNegOneReg<:Regularizer
     scale::Float64
 end
 NonNegOneReg() = NonNegOneReg(1)
-prox(r::NonNegOneReg,u::AbstractArray,alpha::Number) = max(u-alpha,0)
+prox(r::NonNegOneReg,u::AbstractArray,alpha::Number) = max.(u-alpha,0)
 
 prox!(r::NonNegOneReg,u::AbstractArray,alpha::Number) = begin
-  nonnegsoftthreshold = (x::Number -> max(x-alpha,0))
+  nonnegsoftthreshold = (x::Number -> max.(x-alpha,0))
   map!(nonnegsoftthreshold, u)
 end
 
@@ -144,11 +144,11 @@ type NonNegQuadReg
     scale::Float64
 end
 NonNegQuadReg() = NonNegQuadReg(1)
-prox(r::NonNegQuadReg,u::AbstractArray,alpha::Number) = max(1/(1+2*alpha*r.scale)*u, 0)
+prox(r::NonNegQuadReg,u::AbstractArray,alpha::Number) = max.(1/(1+2*alpha*r.scale)*u, 0)
 prox!(r::NonNegQuadReg,u::AbstractArray,alpha::Number) = begin
   scale!(u, 1/(1+2*alpha*r.scale))
   maxval = maximum(u)
-  clamp!(u, 0, maxval)  
+  clamp!(u, 0, maxval)
 end
 function evaluate(r::NonNegQuadReg,a::AbstractArray)
     for ai in a
@@ -260,19 +260,20 @@ type KSparseConstraint<:Regularizer
   k::Int
 end
 function evaluate(r::KSparseConstraint, a::AbstractArray)
-    nonzcount = 0
-    for ai in a
-      if nonzcount == k
-        if ai != 0
-          return Inf
-        end
-      else
-        if ai != 0
-          nonzcount += 1
-        end
+  k = r.k
+  nonzcount = 0
+  for ai in a
+    if nonzcount == k
+      if ai != 0
+        return Inf
+      end
+    else
+      if ai != 0
+        nonzcount += 1
       end
     end
-    return 0
+  end
+  return 0
 end
 function prox(r::KSparseConstraint, u::AbstractArray, alpha::Number)
   k = r.k
@@ -333,7 +334,7 @@ function prox(r::SimplexConstraint, u::AbstractArray, alpha::Number=0)
             break
         end
     end
-    max(u - t, 0)
+    max.(u - t, 0)
 end
 function evaluate(r::SimplexConstraint,a::AbstractArray)
     # check it's a unit vector
@@ -382,7 +383,6 @@ scale!(r::OrdinalReg, newscale::Number) = scale!(r.r, newscale)
 # make sure we don't add two offsets cuz that's weird
 lastentry_unpenalized(r::OrdinalReg) = r
 
-
 type MNLOrdinalReg<:Regularizer
     r::Regularizer
 end
@@ -409,7 +409,6 @@ scale!(r::MNLOrdinalReg, newscale::Number) = scale!(r.r, newscale)
 # make sure we don't add two offsets cuz that's weird
 lastentry_unpenalized(r::MNLOrdinalReg) = r
 
-
 ## Quadratic regularization with non-zero mean
 type RemQuadReg<:Regularizer
         scale::Float64
@@ -422,8 +421,7 @@ prox!(r::RemQuadReg, u::Array{Float64}, alpha::Number) = begin
         broadcast!(.+, u, u, 2 * alpha * r.scale * r.m)
         scale!(u, 1 / (1 + 2 * alpha * r.scale))
 end
-evaluate(r::RemQuadReg, a::AbstractArray) = r.scale * sumabs2(a - r.m)
-
+evaluate(r::RemQuadReg, a::AbstractArray) = r.scale * sum(abs2, a - r.m)
 
 ## simpler method for numbers, not arrays
 evaluate(r::Regularizer, u::Number) = evaluate(r, [u])

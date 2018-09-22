@@ -9,6 +9,10 @@ principal components analysis (PCA), matrix completion, robust PCA,
 nonnegative matrix factorization, k-means, and many more.
 
 For more information on GLRMs, see [our paper][glrmpaper].
+There is a [python interface](https://github.com/udellgroup/pyglrm) to this package,
+and a GLRM implementation in
+[the H2O machine learning platform](http://docs.h2o.ai/h2o/latest-stable/h2o-docs/data-science/glrm.html)
+with interfaces in a variety of languages.
 
 LowRankModels.jl makes it easy to mix and match loss functions and regularizers
 to construct a model suitable for a particular data set.
@@ -131,7 +135,7 @@ Similiarly, the `ry` argument can be an array of regularizers,
 with one for each column (in order). For example,
 for a data set with 3 columns, you could use
 
-    ry = Regularizer[QuadReg(1), QuadReg(10), FixedLatentFeatureConstraint([1,2,3])]
+    ry = Regularizer[QuadReg(1), QuadReg(10), FixedLatentFeaturesConstraint([1.,2.,3.])]
 
 This regularizes the first to columns of `Y` with `||Y[:,1]||^2 + 10||Y[:,2]||^2`
 and constrains the third (and last) column of `Y` to be equal to `[1,2,3]`.
@@ -220,10 +224,30 @@ Right now, all other data types are ignored.
 
 The full call signature is
 ```
-GLRM(df::DataFrame, k::Int;
-    losses = Loss[], rx = QuadReg(.01), ry = QuadReg(.01),
-    offset = true, scale = false,
-    prob_scale = true, NaNs_to_NAs = true)
+function GLRM(df::DataFrame, k::Int;
+              losses = Loss[], rx = QuadReg(.01), ry = QuadReg(.01),
+              offset = true, scale = false,
+              prob_scale = true, NaNs_to_NAs = true)
+```
+You can modify the losses or regularizers, or turn off offsets or scaling,
+using these keyword arguments.
+
+Or to specify a map from data types to losses, define a new loss_map from datatypes to losses (like probabilistic_losses, below):
+```
+probabilistic_losses = Dict{Symbol, Any}(
+    :real        => QuadLoss,
+    :bool        => LogisticLoss,
+    :ord         => MultinomialOrdinalLoss,
+    :cat         => MultinomialLoss
+)
+```
+and input an array of datatypes (one for each column of your data frame: `GLRM(A, k, datatypes; loss_map = loss_map)`. The full call signature is
+```
+function GLRM(df::DataFrame, k::Int, datatypes::Array{Symbol,1};
+              loss_map = probabilistic_losses,
+              rx = QuadReg(.01), ry = QuadReg(.01),
+              offset = true, scale = false, prob_scale = true,
+              transform_data_to_numbers = true, NaNs_to_NAs = true)
 ```
 You can modify the losses or regularizers, or turn off offsets or scaling,
 using these keyword arguments.
@@ -361,6 +385,15 @@ The default parameters are: `ProxGradParams(stepsize=1.0;max_iter=100,inner_iter
 `ch` gives the convergence history so that the success of the optimization can be monitored;
 `ch.objective` stores the objective values, and `ch.times` captures the times these objective values were achieved.
 Try plotting this to see if you just need to increase `max_iter` to converge to a better model.
+
+# Imputation
+
+After fitting a GLRM, you can use it to impute values of `A` in
+four different ways:
+* `impute(glrm)` gives the maximum likelihood estimates for each entry
+* `impute_missing(glrm)` imputes missing entries and leaves observed entries unchanged
+* `sample(glrm)` gives a draw from the posterior distribution, conditioned on the fit values of `X` and `Y`, for each entry
+* `sample_missing(glrm)` samples missing entries and leaves observed entries unchanged
 
 # Cross validation
 

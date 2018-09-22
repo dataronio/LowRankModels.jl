@@ -36,7 +36,7 @@
 #           Finds a = argmin l(u,a), the most likely value for an observation given a parameter u
 
 import Base: scale!, *, convert
-import Optim.optimize
+import Optim: optimize, LBFGS
 export Loss,
        DiffLoss, ClassificationLoss, SingleDimLoss, # categories of Losses
        QuadLoss, L1Loss, HuberLoss, QuantileLoss, # losses for predicting reals
@@ -47,20 +47,23 @@ export Loss,
        PeriodicLoss, # losses for predicting periodic variables
        evaluate, grad, M_estimator, # methods on losses
        avgerror, scale, scale!, *,
-       embedding_dim, get_yidxs, datalevels
+       embedding_dim, get_yidxs, datalevels, domain
 
-abstract Loss
+@compat abstract type Loss end
 # a DiffLoss is one in which l(u,a) = f(u-a) AND argmin f(x) = 0
 # for example, QuadLoss(u,a)=(u-a)² and we can write f(x)=x² and x=u-a
-abstract DiffLoss<:Loss
+@compat abstract type DiffLoss<:Loss end
 # a ClassificationLoss is one in which observed values are true = 1 or false = 0 = -1 AND argmin_a L(u,a) = u>=0 ? true : false
-abstract ClassificationLoss<:Loss
+@compat abstract type ClassificationLoss<:Loss end
 # Single Dimensional losses are DiffLosses or ClassificationLosses, which allow optimized evaluate and grad functions
-typealias SingleDimLoss Union{DiffLoss, ClassificationLoss}
+@compat const SingleDimLoss = Union{DiffLoss, ClassificationLoss}
 
 scale!(l::Loss, newscale::Number) = (l.scale = newscale; l)
 scale(l::Loss) = l.scale
 *(newscale::Number, l::Loss) = (newl = copy(l); scale!(newl, newscale))
+*(l::Loss, newscale::Number) = (newl = copy(l); scale!(newl, newscale))
+
+domain(l::Loss) = l.domain
 
 ### embedding dimensions: mappings from losses/columns of A to columns of Y
 
@@ -76,7 +79,8 @@ function get_yidxs{LossSubtype<:Loss}(losses::Array{LossSubtype,1})
     d = sum(ds)
     featurestartidxs = cumsum(append!([1], ds))
     # find which columns of Y map to which columns of A (for multidimensional losses)
-    @compat yidxs = Array(Union{Range{Int}, Int}, n)
+    U = Union{Range{Int}, Int}
+    @compat yidxs = Array{U}(n)
 
     for f = 1:n
         if ds[f] == 1
@@ -110,17 +114,18 @@ M_estimator(l::ClassificationLoss, a::AbstractArray{Int,1}) = M_estimator(l,Bool
 # general-purpose optimizing M_estimator.
 function M_estimator(l::Loss, a::AbstractArray; test="test")
     # the function to optimize over
-    f = u -> sum(map(ai->evaluate(l,u[1],ai), a)) # u is indexed because `optim` assumes input is a vector
+    f = (u -> sum(map(ai->evaluate(l,u[1],ai), a))) # u is indexed because `optim` assumes input is a vector
     # the gradient of that function
-    function g!(u::Vector, storage::Vector) # this is the format `optim` expects
+    function g!(storage::Vector, u::Vector) # this is the format `optim` expects
         storage[1] = sum(map(ai->grad(l,u[1],ai), a))
     end
-    m = optimize(f, g!, [median(a)], method=:l_bfgs).minimum[1]
+    m = optimize(f, g!, [median(a)], LBFGS()).minimum[1]
 end
 
 # Uses uₒ = argmin ∑l(u,aᵢ) to find (1/n)*∑l(uₒ,aᵢ) which is the
 # average error incurred by using the estimate uₒ for every aᵢ
 function avgerror(l::Loss, a::AbstractArray)
+    b = collect(skipmissing(a))
     m = M_estimator(l,a)
     sum(map(ai->evaluate(l,m,ai),a))/length(a)
 end
@@ -227,10 +232,10 @@ type PoissonLoss<:Loss
     scale::Float64
     domain::Domain
 end
-PoissonLoss(max_count::Int, scale=1.0::Float64; domain=CountDomain(max_count)::Domain) = PoissonLoss(scale, domain)
+PoissonLoss(max_count=2^31::Int; domain=CountDomain(max_count)::Domain) = PoissonLoss(1.0, domain)
 
 function evaluate(l::PoissonLoss, u::Float64, a::Number)
-    l.scale*(exp(u) - a*u) # in reality this should be: e^u - a*u + a*log(a) - a, but a*log(a) - a is constant wrt a!
+    l.scale*(exp(u) - a*u + (a==0? 0 : a*(log(a)-1))) # log(a!) ~ a==0? 0 : a*(log(a)-1)
 end
 
 grad(l::PoissonLoss, u::Float64, a::Number) = l.scale*(exp(u) - a)
@@ -453,7 +458,7 @@ function M_estimator(l::OvALoss, a::AbstractArray)
 end
 
 ########################################## Bigger vs Smaller loss ##########################################
-# f: ℜx{1, 2, ..., max-1, max} -> ℜ
+# f: ℜx{1, 2, ..., max-1} -> ℜ
 type BvSLoss<:Loss
     max::Integer
     bin_loss::Loss
@@ -512,7 +517,7 @@ datalevels(l::OrdisticLoss) = 1:l.max # levels are encoded as the numbers 1:l.ma
 function evaluate(l::OrdisticLoss, u::Array{Float64,1}, a::Int)
     diffusquared = u[a]^2 .- u.^2
     M = maximum(diffusquared)
-    invlik = sum(exp(diffusquared .- M))
+    invlik = sum(exp, (diffusquared .- M))
     loss = M + log(invlik)
     return l.scale*loss
 end
@@ -525,7 +530,7 @@ function grad(l::OrdisticLoss, u::Array{Float64,1}, a::Int)
     for j in 1:length(u)
         diffusquared = u[j]^2 .- u.^2
         M = maximum(diffusquared)
-        invlik = sum(exp(diffusquared .- M))
+        invlik = sum(exp,(diffusquared .- M))
         g[j] -= 2 * u[j] * exp(- M) / invlik
     end
     return l.scale*g
@@ -550,6 +555,9 @@ end
 # the number of levels of the second argument a,
 # since the entries of u correspond to the division between each level
 # and the one above it.
+#
+# XXX warning XXX
+# the documentation in the comment below this point is defunct
 #
 # To yield a sensible pdf, the entries of u should be increasing
 # (b/c they're basically the -log of the cdf at the boundary between each level)

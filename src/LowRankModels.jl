@@ -3,8 +3,9 @@ __precompile__()
 module LowRankModels
 
 using Compat
+using Missings
 
-import Base: scale!, scale, show
+import Base: scale!, show
 import StatsBase: fit!, mode
 
 # define losses, regularizers, convergence history
@@ -30,6 +31,7 @@ else
   include("algorithms/proxgrad.jl")
 end
 include("algorithms/sparse_proxgrad.jl")
+include("algorithms/quad_streaming.jl")
 
 # initialization methods
 include("rsvd.jl")
@@ -39,6 +41,7 @@ include("initialize.jl")
 include("simple_glrms.jl")
 include("cross_validate.jl")
 include("fit_dataframe.jl")
+include("sample.jl")
 # this takes to long to load for normal use
 # include("plot.jl")
 
